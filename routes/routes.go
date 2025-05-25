@@ -23,11 +23,23 @@ func SetupRoutes(contactoService services.ContactoServiceInterface) *mux.Router 
 	// Rutas de contactos
 	contactos := api.PathPrefix("/contactos").Subrouter()
 	
+	// 🆕 NUEVO: GET /api/contactos/con-validacion - Obtener contactos con estado de validación
+	contactos.HandleFunc("/con-validacion", contactoHandler.GetContactosConEstadoValidacion).Methods("GET")
+	
 	// GET /api/contactos/buscar - Buscar contactos (debe ir antes que /{clave})
 	contactos.HandleFunc("/buscar", contactoHandler.SearchContactos).Methods("GET")
 	
 	// GET /api/contactos/stats - Estadísticas
 	contactos.HandleFunc("/stats", contactoHandler.GetContactoStats).Methods("GET")
+	
+	// GET /api/contactos/validation - Reporte de validación del Excel
+	contactos.HandleFunc("/validation", contactoHandler.GetExcelValidationReport).Methods("GET")
+	
+	// GET /api/contactos/errors - Errores de validación detallados
+	contactos.HandleFunc("/errors", contactoHandler.GetValidationErrors).Methods("GET")
+	
+	// POST /api/contactos/reload - Recargar archivo Excel
+	contactos.HandleFunc("/reload", contactoHandler.ReloadExcel).Methods("POST")
 	
 	// GET /api/contactos - Obtener todos los contactos
 	contactos.HandleFunc("", contactoHandler.GetAllContactos).Methods("GET")

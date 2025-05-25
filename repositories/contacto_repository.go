@@ -11,7 +11,7 @@ import (
 	"github.com/tealeg/xlsx/v3"
 )
 
-// ContactoRepository define la interfaz para el repositorio de contactos
+// ContactoRepositoryInterface define la interfaz para el repositorio de contactos
 type ContactoRepositoryInterface interface {
 	GetAll() ([]models.Contacto, error)
 	GetByID(claveCliente int) (*models.Contacto, error)
@@ -20,25 +20,32 @@ type ContactoRepositoryInterface interface {
 	Delete(claveCliente int) error
 	Search(criteria *models.ContactoDTO) ([]models.Contacto, error)
 	ExistsByID(claveCliente int) (bool, error)
+	GetLoadErrors() []models.RowError
+	ReloadExcel() ([]models.RowError, error)
 }
 
 // ContactoRepository implementa el acceso a datos para contactos
 type ContactoRepository struct {
-	excelFile string
-	contactos []models.Contacto
+	excelFile   string
+	contactos   []models.Contacto
+	loadErrors  []models.RowError
 }
 
 // NewContactoRepository crea una nueva instancia del repositorio
 func NewContactoRepository(excelFile string) *ContactoRepository {
 	repo := &ContactoRepository{
-		excelFile: excelFile,
-		contactos: []models.Contacto{},
+		excelFile:   excelFile,
+		contactos:   []models.Contacto{},
+		loadErrors:  []models.RowError{},
 	}
 	
 	// Cargar datos al inicializar
-	if err := repo.loadFromExcel(); err != nil {
+	loadErrors, err := repo.loadFromExcel()
+	if err != nil {
 		fmt.Printf("⚠️  Error cargando Excel: %v. Iniciando con datos vacíos.\n", err)
 	}
+	
+	repo.loadErrors = loadErrors
 	
 	return repo
 }
@@ -155,19 +162,32 @@ func (r *ContactoRepository) ExistsByID(claveCliente int) (bool, error) {
 	return true, nil
 }
 
-// loadFromExcel carga los contactos desde el archivo Excel
-func (r *ContactoRepository) loadFromExcel() error {
+// GetLoadErrors retorna los errores de carga del Excel
+func (r *ContactoRepository) GetLoadErrors() []models.RowError {
+	return r.loadErrors
+}
+
+// ReloadExcel recarga el archivo Excel y retorna los errores encontrados
+func (r *ContactoRepository) ReloadExcel() ([]models.RowError, error) {
+	loadErrors, err := r.loadFromExcel()
+	r.loadErrors = loadErrors
+	return loadErrors, err
+}
+
+// loadFromExcel carga los contactos desde el archivo Excel con validación básica
+func (r *ContactoRepository) loadFromExcel() ([]models.RowError, error) {
 	file, err := xlsx.OpenFile(r.excelFile)
 	if err != nil {
-		return fmt.Errorf("error abriendo archivo Excel: %w", err)
+		return nil, fmt.Errorf("error abriendo archivo Excel: %w", err)
 	}
 
 	if len(file.Sheets) == 0 {
-		return fmt.Errorf("el archivo Excel no tiene hojas")
+		return nil, fmt.Errorf("el archivo Excel no tiene hojas")
 	}
 
 	sheet := file.Sheets[0]
 	r.contactos = []models.Contacto{}
+	var loadErrors []models.RowError
 
 	// Usar ForEachRow para xlsx/v3
 	rowIndex := 0
@@ -177,6 +197,8 @@ func (r *ContactoRepository) loadFromExcel() error {
 			return nil
 		}
 
+		currentRow := rowIndex + 1 // +1 porque empezamos desde 0 y queremos mostrar número real de fila
+
 		// Verificar que la fila tenga al menos 4 celdas
 		cellCount := 0
 		row.ForEachCell(func(cell *xlsx.Cell) error {
@@ -185,6 +207,24 @@ func (r *ContactoRepository) loadFromExcel() error {
 		})
 
 		if cellCount < 4 {
+			// Si la fila tiene contenido pero menos de 4 columnas
+			hasContent := false
+			row.ForEachCell(func(cell *xlsx.Cell) error {
+				if strings.TrimSpace(cell.String()) != "" {
+					hasContent = true
+				}
+				return nil
+			})
+			
+			if hasContent {
+				loadErrors = append(loadErrors, models.RowError{
+					Row:    currentRow,
+					Column: "general",
+					Field:  "estructura",
+					Value:  "",
+					Error:  "La fila debe contener exactamente 4 columnas: ClaveCliente, Nombre, Correo, TelefonoContacto",
+				})
+			}
 			rowIndex++
 			return nil
 		}
@@ -200,42 +240,172 @@ func (r *ContactoRepository) loadFromExcel() error {
 			return nil
 		})
 
-		claveStr := cells[0].String()
-		nombre := cells[1].String()
-		correo := cells[2].String()
-		telefono := cells[3].String()
+		claveStr := strings.TrimSpace(cells[0].String())
+		nombre := strings.TrimSpace(cells[1].String())
+		correo := strings.TrimSpace(cells[2].String())
+		telefono := strings.TrimSpace(cells[3].String())
 
 		// Validar que no estén vacíos
-		if claveStr == "" || nombre == "" || correo == "" || telefono == "" {
+		rowErrors := []models.RowError{}
+		
+		if claveStr == "" {
+			rowErrors = append(rowErrors, models.RowError{
+				Row:    currentRow,
+				Column: "A",
+				Field:  "claveCliente",
+				Value:  claveStr,
+				Error:  "La clave cliente no puede estar vacía",
+			})
+		}
+		
+		if nombre == "" {
+			rowErrors = append(rowErrors, models.RowError{
+				Row:    currentRow,
+				Column: "B",
+				Field:  "nombre",
+				Value:  nombre,
+				Error:  "El nombre no puede estar vacío",
+			})
+		}
+		
+		if correo == "" {
+			rowErrors = append(rowErrors, models.RowError{
+				Row:    currentRow,
+				Column: "C",
+				Field:  "correo",
+				Value:  correo,
+				Error:  "El correo no puede estar vacío",
+			})
+		}
+		
+		if telefono == "" {
+			rowErrors = append(rowErrors, models.RowError{
+				Row:    currentRow,
+				Column: "D",
+				Field:  "telefonoContacto",
+				Value:  telefono,
+				Error:  "El teléfono no puede estar vacío",
+			})
+		}
+
+		// Si hay campos vacíos, agregar errores y continuar
+		if len(rowErrors) > 0 {
+			loadErrors = append(loadErrors, rowErrors...)
 			rowIndex++
 			return nil
 		}
 
+		// Validar formato de clave cliente
 		clave, err := strconv.Atoi(claveStr)
 		if err != nil {
-			fmt.Printf("⚠️  Fila %d: clave inválida '%s', saltando\n", rowIndex+1, claveStr)
+			loadErrors = append(loadErrors, models.RowError{
+				Row:    currentRow,
+				Column: "A",
+				Field:  "claveCliente",
+				Value:  claveStr,
+				Error:  "La clave cliente debe ser un número entero válido",
+			})
 			rowIndex++
 			return nil
 		}
 
-		contacto := models.Contacto{
+		// Validaciones básicas sin usar el validador externo
+		if clave <= 0 {
+			loadErrors = append(loadErrors, models.RowError{
+				Row:    currentRow,
+				Column: "A",
+				Field:  "claveCliente",
+				Value:  claveStr,
+				Error:  "La clave cliente debe ser un número mayor a 0",
+			})
+		}
+
+		// Validar teléfono (10 dígitos)
+		if len(telefono) != 10 {
+			loadErrors = append(loadErrors, models.RowError{
+				Row:    currentRow,
+				Column: "D",
+				Field:  "telefonoContacto",
+				Value:  telefono,
+				Error:  "El teléfono debe tener exactamente 10 dígitos",
+			})
+		}
+
+		// Validar que teléfono sean solo números
+		for _, char := range telefono {
+			if char < '0' || char > '9' {
+				loadErrors = append(loadErrors, models.RowError{
+					Row:    currentRow,
+					Column: "D",
+					Field:  "telefonoContacto",
+					Value:  telefono,
+					Error:  "El teléfono debe contener solo números",
+				})
+				break
+			}
+		}
+
+		// Validar formato básico de correo
+		if !strings.Contains(correo, "@") {
+			loadErrors = append(loadErrors, models.RowError{
+				Row:    currentRow,
+				Column: "C",
+				Field:  "correo",
+				Value:  correo,
+				Error:  "El correo debe contener @",
+			})
+		}
+
+		// Verificar duplicados de clave cliente
+		for _, existingContacto := range r.contactos {
+			if existingContacto.ClaveCliente == clave {
+				loadErrors = append(loadErrors, models.RowError{
+					Row:    currentRow,
+					Column: "A",
+					Field:  "claveCliente",
+					Value:  claveStr,
+					Error:  fmt.Sprintf("La clave cliente %d ya existe en el archivo", clave),
+				})
+				break
+			}
+		}
+
+		// Si no hay errores críticos, agregar el contacto
+		tempContacto := models.Contacto{
 			ClaveCliente:     clave,
 			Nombre:           nombre,
 			Correo:           correo,
 			TelefonoContacto: telefono,
 		}
 
-		r.contactos = append(r.contactos, contacto)
+		// Solo agregar si no hay errores en esta fila
+		hasErrors := false
+		for _, err := range loadErrors {
+			if err.Row == currentRow {
+				hasErrors = true
+				break
+			}
+		}
+
+		if !hasErrors {
+			r.contactos = append(r.contactos, tempContacto)
+		}
+
 		rowIndex++
 		return nil
 	})
 
 	if err != nil {
-		return fmt.Errorf("error iterando filas: %w", err)
+		return loadErrors, fmt.Errorf("error iterando filas: %w", err)
 	}
 
-	fmt.Printf("✅ Cargados %d contactos desde Excel\n", len(r.contactos))
-	return nil
+	fmt.Printf("✅ Procesadas %d filas del Excel\n", rowIndex-1)
+	fmt.Printf("✅ Cargados %d contactos válidos\n", len(r.contactos))
+	if len(loadErrors) > 0 {
+		fmt.Printf("⚠️  Se encontraron %d errores de validación\n", len(loadErrors))
+	}
+
+	return loadErrors, nil
 }
 
 // saveToExcel guarda los contactos en el archivo Excel

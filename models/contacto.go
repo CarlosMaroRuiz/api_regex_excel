@@ -17,20 +17,6 @@ type ContactoDTO struct {
 	Telefono     string `json:"telefono,omitempty"`
 }
 
-// ErrorResponse representa un error de validación
-type ErrorResponse struct {
-	Campo   string `json:"campo"`
-	Mensaje string `json:"mensaje"`
-}
-
-// APIResponse representa una respuesta estándar de la API
-type APIResponse struct {
-	Success bool        `json:"success"`
-	Data    interface{} `json:"data,omitempty"`
-	Error   string      `json:"error,omitempty"`
-	Errors  []ErrorResponse `json:"errors,omitempty"`
-}
-
 // ContactoRequest representa los datos de entrada para crear/actualizar
 type ContactoRequest struct {
 	ClaveCliente     int    `json:"claveCliente"`

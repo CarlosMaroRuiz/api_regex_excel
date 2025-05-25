@@ -4,7 +4,6 @@ package validators
 import (
 	"regexp"
 	"strings"
-
 	"contactos-api/models"
 )
 

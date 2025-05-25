@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"contactos-api/models"
 	"contactos-api/repositories"
@@ -17,6 +18,8 @@ type ContactoServiceInterface interface {
 	UpdateContacto(claveCliente int, request *models.ContactoRequest) (*models.Contacto, []models.ErrorResponse, error)
 	DeleteContacto(claveCliente int) error
 	SearchContactos(criteria *models.ContactoDTO) ([]models.Contacto, []models.ErrorResponse, error)
+	GetExcelValidationReport() (*models.ExcelValidationReport, error)
+	ReloadExcel() (*models.ExcelValidationReport, error)
 }
 
 // ContactoService implementa la lógica de negocio para contactos
@@ -169,6 +172,71 @@ func (s *ContactoService) SearchContactos(criteria *models.ContactoDTO) ([]model
 	return contactos, nil, nil
 }
 
+// GetExcelValidationReport obtiene el reporte de validación del Excel
+func (s *ContactoService) GetExcelValidationReport() (*models.ExcelValidationReport, error) {
+	loadErrors := s.repo.GetLoadErrors()
+	contactos, err := s.repo.GetAll()
+	if err != nil {
+		return nil, fmt.Errorf("error obteniendo contactos: %w", err)
+	}
+
+	totalRows := len(contactos) + len(loadErrors)
+	validRows := len(contactos)
+	invalidRows := 0
+
+	// Contar filas únicas con errores
+	errorRows := make(map[int]bool)
+	for _, loadError := range loadErrors {
+		errorRows[loadError.Row] = true
+	}
+	invalidRows = len(errorRows)
+
+	return &models.ExcelValidationReport{
+		TotalRows:     totalRows,
+		ValidRows:     validRows,
+		InvalidRows:   invalidRows,
+		Errors:        loadErrors,
+		LoadTimestamp: time.Now().Format("2006-01-02 15:04:05"),
+	}, nil
+}
+
+// ReloadExcel recarga el archivo Excel y retorna el reporte de validación
+func (s *ContactoService) ReloadExcel() (*models.ExcelValidationReport, error) {
+	// Verificar que el repositorio tenga el método ReloadExcel
+	if repo, ok := s.repo.(*repositories.ContactoRepository); ok {
+		loadErrors, err := repo.ReloadExcel()
+		if err != nil {
+			return nil, fmt.Errorf("error recargando Excel: %w", err)
+		}
+
+		contactos, err := s.repo.GetAll()
+		if err != nil {
+			return nil, fmt.Errorf("error obteniendo contactos después de recargar: %w", err)
+		}
+
+		totalRows := len(contactos) + len(loadErrors)
+		validRows := len(contactos)
+		invalidRows := 0
+
+		// Contar filas únicas con errores
+		errorRows := make(map[int]bool)
+		for _, loadError := range loadErrors {
+			errorRows[loadError.Row] = true
+		}
+		invalidRows = len(errorRows)
+
+		return &models.ExcelValidationReport{
+			TotalRows:     totalRows,
+			ValidRows:     validRows,
+			InvalidRows:   invalidRows,
+			Errors:        loadErrors,
+			LoadTimestamp: time.Now().Format("2006-01-02 15:04:05"),
+		}, nil
+	}
+
+	return nil, fmt.Errorf("recarga de Excel no disponible")
+}
+
 // isEmptySearch verifica si los criterios de búsqueda están vacíos
 func (s *ContactoService) isEmptySearch(criteria *models.ContactoDTO) bool {
 	return criteria.ClaveCliente == "" && 
@@ -184,9 +252,18 @@ func (s *ContactoService) GetContactoStats() (map[string]interface{}, error) {
 		return nil, fmt.Errorf("error obteniendo contactos para estadísticas: %w", err)
 	}
 
+	// Obtener errores de validación
+	loadErrors := s.repo.GetLoadErrors()
+	errorsByField := make(map[string]int)
+	for _, loadError := range loadErrors {
+		errorsByField[loadError.Field]++
+	}
+
 	stats := map[string]interface{}{
-		"total_contactos": len(contactos),
-		"dominios":        s.getDominioStats(contactos),
+		"total_contactos":     len(contactos),
+		"errores_validacion":  len(loadErrors),
+		"errores_por_campo":   errorsByField,
+		"dominios":           s.getDominioStats(contactos),
 	}
 
 	return stats, nil
