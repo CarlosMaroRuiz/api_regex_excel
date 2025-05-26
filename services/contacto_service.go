@@ -20,6 +20,8 @@ type ContactoServiceInterface interface {
 	SearchContactos(criteria *models.ContactoDTO) ([]models.Contacto, []models.ErrorResponse, error)
 	GetExcelValidationReport() (*models.ExcelValidationReport, error)
 	ReloadExcel() (*models.ExcelValidationReport, error)
+	// 🆕 NUEVO: Obtener datos inválidos para corrección
+	GetInvalidContactsForCorrection() ([]models.RowData, error)
 }
 
 // ContactoService implementa la lógica de negocio para contactos
@@ -172,7 +174,7 @@ func (s *ContactoService) SearchContactos(criteria *models.ContactoDTO) ([]model
 	return contactos, nil, nil
 }
 
-// GetExcelValidationReport obtiene el reporte de validación del Excel
+// 🆕 MEJORADO: GetExcelValidationReport ahora incluye datos inválidos
 func (s *ContactoService) GetExcelValidationReport() (*models.ExcelValidationReport, error) {
 	loadErrors := s.repo.GetLoadErrors()
 	contactos, err := s.repo.GetAll()
@@ -180,31 +182,31 @@ func (s *ContactoService) GetExcelValidationReport() (*models.ExcelValidationRep
 		return nil, fmt.Errorf("error obteniendo contactos: %w", err)
 	}
 
-	totalRows := len(contactos) + len(loadErrors)
-	validRows := len(contactos)
-	invalidRows := 0
-
-	// Contar filas únicas con errores
-	errorRows := make(map[int]bool)
-	for _, loadError := range loadErrors {
-		errorRows[loadError.Row] = true
+	// 🆕 NUEVO: Obtener datos de filas inválidas
+	var invalidRowsData []models.RowData
+	if repo, ok := s.repo.(*repositories.ContactoRepository); ok {
+		invalidRowsData = repo.GetInvalidRowsData()
 	}
-	invalidRows = len(errorRows)
+
+	totalRows := len(contactos) + len(invalidRowsData)
+	validRows := len(contactos)
+	invalidRows := len(invalidRowsData)
 
 	return &models.ExcelValidationReport{
-		TotalRows:     totalRows,
-		ValidRows:     validRows,
-		InvalidRows:   invalidRows,
-		Errors:        loadErrors,
-		LoadTimestamp: time.Now().Format("2006-01-02 15:04:05"),
+		TotalRows:       totalRows,
+		ValidRows:       validRows,
+		InvalidRows:     invalidRows,
+		Errors:          loadErrors,
+		InvalidRowsData: invalidRowsData, // 🆕 NUEVO: Incluir datos inválidos
+		LoadTimestamp:   time.Now().Format("2006-01-02 15:04:05"),
 	}, nil
 }
 
-// ReloadExcel recarga el archivo Excel y retorna el reporte de validación
+// 🆕 MEJORADO: ReloadExcel ahora maneja datos inválidos
 func (s *ContactoService) ReloadExcel() (*models.ExcelValidationReport, error) {
-	// Verificar que el repositorio tenga el método ReloadExcel
+	// Verificar que el repositorio tenga el método ReloadExcel mejorado
 	if repo, ok := s.repo.(*repositories.ContactoRepository); ok {
-		loadErrors, err := repo.ReloadExcel()
+		loadErrors, invalidRowsData, err := repo.ReloadExcel()
 		if err != nil {
 			return nil, fmt.Errorf("error recargando Excel: %w", err)
 		}
@@ -214,27 +216,31 @@ func (s *ContactoService) ReloadExcel() (*models.ExcelValidationReport, error) {
 			return nil, fmt.Errorf("error obteniendo contactos después de recargar: %w", err)
 		}
 
-		totalRows := len(contactos) + len(loadErrors)
+		totalRows := len(contactos) + len(invalidRowsData)
 		validRows := len(contactos)
-		invalidRows := 0
-
-		// Contar filas únicas con errores
-		errorRows := make(map[int]bool)
-		for _, loadError := range loadErrors {
-			errorRows[loadError.Row] = true
-		}
-		invalidRows = len(errorRows)
+		invalidRows := len(invalidRowsData)
 
 		return &models.ExcelValidationReport{
-			TotalRows:     totalRows,
-			ValidRows:     validRows,
-			InvalidRows:   invalidRows,
-			Errors:        loadErrors,
-			LoadTimestamp: time.Now().Format("2006-01-02 15:04:05"),
+			TotalRows:       totalRows,
+			ValidRows:       validRows,
+			InvalidRows:     invalidRows,
+			Errors:          loadErrors,
+			InvalidRowsData: invalidRowsData, // 🆕 NUEVO: Incluir datos inválidos
+			LoadTimestamp:   time.Now().Format("2006-01-02 15:04:05"),
 		}, nil
 	}
 
 	return nil, fmt.Errorf("recarga de Excel no disponible")
+}
+
+// 🆕 NUEVO: Obtener datos inválidos para corrección
+func (s *ContactoService) GetInvalidContactsForCorrection() ([]models.RowData, error) {
+	// Verificar que el repositorio tenga el método
+	if repo, ok := s.repo.(*repositories.ContactoRepository); ok {
+		return repo.GetInvalidRowsData(), nil
+	}
+	
+	return nil, fmt.Errorf("obtención de datos inválidos no disponible")
 }
 
 // isEmptySearch verifica si los criterios de búsqueda están vacíos
@@ -259,14 +265,34 @@ func (s *ContactoService) GetContactoStats() (map[string]interface{}, error) {
 		errorsByField[loadError.Field]++
 	}
 
+	// 🆕 NUEVO: Obtener datos inválidos para estadísticas
+	var invalidRowsData []models.RowData
+	if repo, ok := s.repo.(*repositories.ContactoRepository); ok {
+		invalidRowsData = repo.GetInvalidRowsData()
+	}
+
 	stats := map[string]interface{}{
-		"total_contactos":     len(contactos),
-		"errores_validacion":  len(loadErrors),
-		"errores_por_campo":   errorsByField,
-		"dominios":           s.getDominioStats(contactos),
+		"total_contactos":        len(contactos),
+		"contactos_validos":      len(contactos),
+		"contactos_invalidos":    len(invalidRowsData),
+		"errores_validacion":     len(loadErrors),
+		"errores_por_campo":      errorsByField,
+		"dominios":              s.getDominioStats(contactos),
+		// 🆕 NUEVO: Estadísticas adicionales
+		"filas_procesadas":      len(contactos) + len(invalidRowsData),
+		"tasa_exito":           s.calculateSuccessRate(len(contactos), len(invalidRowsData)),
 	}
 
 	return stats, nil
+}
+
+// 🆕 NUEVO: Calcular tasa de éxito
+func (s *ContactoService) calculateSuccessRate(valid, invalid int) float64 {
+	total := valid + invalid
+	if total == 0 {
+		return 0.0
+	}
+	return (float64(valid) / float64(total)) * 100
 }
 
 // getDominioStats obtiene estadísticas por dominio de correo

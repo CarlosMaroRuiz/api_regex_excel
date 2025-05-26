@@ -23,7 +23,13 @@ func SetupRoutes(contactoService services.ContactoServiceInterface) *mux.Router 
 	// Rutas de contactos
 	contactos := api.PathPrefix("/contactos").Subrouter()
 	
-	// 🆕 NUEVO: GET /api/contactos/con-validacion - Obtener contactos con estado de validación
+	// 🆕 NUEVO: GET /api/contactos/invalid-data - Obtener datos inválidos para corrección
+	contactos.HandleFunc("/invalid-data", contactoHandler.GetInvalidContactsForCorrection).Methods("GET")
+	
+	// 🆕 NUEVO: GET /api/contactos/detailed-validation - Reporte detallado con sugerencias
+	contactos.HandleFunc("/detailed-validation", contactoHandler.GetDetailedValidationReport).Methods("GET")
+	
+	// GET /api/contactos/con-validacion - Obtener contactos con estado de validación (MEJORADO)
 	contactos.HandleFunc("/con-validacion", contactoHandler.GetContactosConEstadoValidacion).Methods("GET")
 	
 	// GET /api/contactos/buscar - Buscar contactos (debe ir antes que /{clave})
@@ -32,13 +38,13 @@ func SetupRoutes(contactoService services.ContactoServiceInterface) *mux.Router 
 	// GET /api/contactos/stats - Estadísticas
 	contactos.HandleFunc("/stats", contactoHandler.GetContactoStats).Methods("GET")
 	
-	// GET /api/contactos/validation - Reporte de validación del Excel
+	// GET /api/contactos/validation - Reporte de validación del Excel (MEJORADO)
 	contactos.HandleFunc("/validation", contactoHandler.GetExcelValidationReport).Methods("GET")
 	
-	// GET /api/contactos/errors - Errores de validación detallados
+	// GET /api/contactos/errors - Errores de validación detallados (MEJORADO)
 	contactos.HandleFunc("/errors", contactoHandler.GetValidationErrors).Methods("GET")
 	
-	// POST /api/contactos/reload - Recargar archivo Excel
+	// POST /api/contactos/reload - Recargar archivo Excel (MEJORADO)
 	contactos.HandleFunc("/reload", contactoHandler.ReloadExcel).Methods("POST")
 	
 	// GET /api/contactos - Obtener todos los contactos
@@ -56,7 +62,7 @@ func SetupRoutes(contactoService services.ContactoServiceInterface) *mux.Router 
 	// DELETE /api/contactos/{clave} - Eliminar contacto
 	contactos.HandleFunc("/{clave:[0-9]+}", contactoHandler.DeleteContacto).Methods("DELETE")
 
-	// Ruta de salud
+	// Ruta de salud (MEJORADA)
 	api.HandleFunc("/health", contactoHandler.HealthCheck).Methods("GET")
 
 	// Middleware para logging (opcional)
