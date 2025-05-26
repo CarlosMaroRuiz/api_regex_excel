@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"contactos-api/models"
 
 	"github.com/tealeg/xlsx/v3"
 )
 
-// ContactoRepositoryInterface define la interfaz para el repositorio de contactos
 type ContactoRepositoryInterface interface {
 	GetAll() ([]models.Contacto, error)
 	GetByID(claveCliente int) (*models.Contacto, error)
@@ -21,7 +22,6 @@ type ContactoRepositoryInterface interface {
 	Search(criteria *models.ContactoDTO) ([]models.Contacto, error)
 	ExistsByID(claveCliente int) (bool, error)
 	GetLoadErrors() []models.RowError
-	// 🆕 NUEVO: Obtener datos de filas inválidas para corrección
 	GetInvalidRowsData() []models.RowData
 	ReloadExcel() ([]models.RowError, []models.RowData, error)
 }
@@ -31,8 +31,16 @@ type ContactoRepository struct {
 	excelFile        string
 	contactos        []models.Contacto
 	loadErrors       []models.RowError
-	// 🆕 NUEVO: Almacenar datos completos de filas inválidas
 	invalidRowsData  []models.RowData
+	
+	// Optimización condicional
+	useOptimization  bool       // Bandera para activar optimizaciones
+	
+	// Índices para búsquedas (solo si useOptimization=true)
+	indiceClaveCliente map[int]*models.Contacto
+	
+	// Mutex simple solo para proteger operaciones concurrentes
+	mu sync.RWMutex
 }
 
 // NewContactoRepository crea una nueva instancia del repositorio
@@ -42,39 +50,104 @@ func NewContactoRepository(excelFile string) *ContactoRepository {
 		contactos:       []models.Contacto{},
 		loadErrors:      []models.RowError{},
 		invalidRowsData: []models.RowData{},
+		useOptimization: false, // Inicialmente desactivado, se activará automáticamente si es necesario
 	}
 	
 	// Cargar datos al inicializar
+	startTime := time.Now()
+	fmt.Println("🔄 Cargando archivo Excel...")
+	
 	loadErrors, invalidData, err := repo.loadFromExcel()
 	if err != nil {
-		fmt.Printf("⚠️  Error cargando Excel: %v. Iniciando con datos vacíos.\n", err)
+		fmt.Printf("⚠️ Error cargando Excel: %v. Iniciando con datos vacíos.\n", err)
 	}
 	
 	repo.loadErrors = loadErrors
 	repo.invalidRowsData = invalidData
 	
+	// Si hay muchos contactos, activar optimizaciones
+	if len(repo.contactos) > 1000 {
+		repo.useOptimization = true
+		fmt.Println("🚀 Activando optimizaciones para conjunto de datos grande")
+		repo.buildIndices()
+	} else {
+		fmt.Println("✅ Usando modo estándar para conjunto de datos pequeño")
+	}
+	
+	fmt.Printf("✅ Excel cargado en %v. %d contactos válidos, %d inválidos\n", 
+		time.Since(startTime), 
+		len(repo.contactos), 
+		len(repo.invalidRowsData))
+	
 	return repo
+}
+
+// buildIndices construye índices básicos si es necesario
+func (r *ContactoRepository) buildIndices() {
+	if !r.useOptimization {
+		return
+	}
+	
+	startTime := time.Now()
+	fmt.Println("🔍 Construyendo índices para búsquedas rápidas...")
+	
+	// Solo crear el índice por clave cliente (el más crítico)
+	r.indiceClaveCliente = make(map[int]*models.Contacto, len(r.contactos))
+	
+	for i := range r.contactos {
+		contacto := &r.contactos[i]
+		r.indiceClaveCliente[contacto.ClaveCliente] = contacto
+	}
+	
+	fmt.Printf("✅ Índice básico construido en %v para %d contactos\n", 
+		time.Since(startTime), 
+		len(r.contactos))
 }
 
 // GetAll retorna todos los contactos
 func (r *ContactoRepository) GetAll() ([]models.Contacto, error) {
+	// Para conjuntos pequeños no necesitamos mutex
+	if !r.useOptimization {
+		return r.contactos, nil
+	}
+	
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.contactos, nil
 }
 
 // GetByID busca un contacto por su clave cliente
 func (r *ContactoRepository) GetByID(claveCliente int) (*models.Contacto, error) {
-	for i, contacto := range r.contactos {
-		if contacto.ClaveCliente == claveCliente {
-			return &r.contactos[i], nil
+	// Usar índice si está disponible
+	if r.useOptimization {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		
+		if contacto, ok := r.indiceClaveCliente[claveCliente]; ok {
+			copiado := *contacto
+			return &copiado, nil
+		}
+	} else {
+		// Búsqueda secuencial rápida para conjuntos pequeños
+		for i, contacto := range r.contactos {
+			if contacto.ClaveCliente == claveCliente {
+				return &r.contactos[i], nil
+			}
 		}
 	}
+	
 	return nil, fmt.Errorf("contacto con clave %d no encontrado", claveCliente)
 }
 
 // Create crea un nuevo contacto
 func (r *ContactoRepository) Create(contacto *models.Contacto) error {
+	if r.useOptimization {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+	}
+	
 	// Verificar si ya existe
-	exists, err := r.ExistsByID(contacto.ClaveCliente)
+	exists, err := r.existsByIDInternal(contacto.ClaveCliente)
 	if err != nil {
 		return err
 	}
@@ -85,40 +158,145 @@ func (r *ContactoRepository) Create(contacto *models.Contacto) error {
 	// Agregar al slice
 	r.contactos = append(r.contactos, *contacto)
 	
+	// Actualizar índice si está activo
+	if r.useOptimization && r.indiceClaveCliente != nil {
+		nuevoContacto := &r.contactos[len(r.contactos)-1]
+		r.indiceClaveCliente[contacto.ClaveCliente] = nuevoContacto
+	}
+	
 	// Guardar en Excel
 	return r.saveToExcel()
 }
 
-// Update actualiza un contacto existente
-func (r *ContactoRepository) Update(contacto *models.Contacto) error {
-	for i, c := range r.contactos {
-		if c.ClaveCliente == contacto.ClaveCliente {
-			r.contactos[i] = *contacto
-			return r.saveToExcel()
+// existsByIDInternal verifica existencia sin adquirir mutex (para uso interno)
+func (r *ContactoRepository) existsByIDInternal(claveCliente int) (bool, error) {
+	if r.useOptimization && r.indiceClaveCliente != nil {
+		_, ok := r.indiceClaveCliente[claveCliente]
+		return ok, nil
+	}
+	
+	// Búsqueda secuencial para conjuntos pequeños
+	for _, contacto := range r.contactos {
+		if contacto.ClaveCliente == claveCliente {
+			return true, nil
 		}
 	}
-	return fmt.Errorf("contacto con clave %d no encontrado para actualizar", contacto.ClaveCliente)
+	
+	return false, nil
+}
+
+// Update actualiza un contacto existente
+func (r *ContactoRepository) Update(contacto *models.Contacto) error {
+	if r.useOptimization {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+	}
+	
+	// Buscar índice del contacto
+	var encontrado bool
+	var indice int
+	
+	if r.useOptimization && r.indiceClaveCliente != nil {
+		if existente, ok := r.indiceClaveCliente[contacto.ClaveCliente]; ok {
+			// Actualizar directamente la referencia
+			*existente = *contacto
+			encontrado = true
+		}
+	} else {
+		// Búsqueda secuencial
+		for i, c := range r.contactos {
+			if c.ClaveCliente == contacto.ClaveCliente {
+				r.contactos[i] = *contacto
+				encontrado = true
+				indice = i
+				break
+			}
+		}
+	}
+	
+	if !encontrado {
+		return fmt.Errorf("contacto con clave %d no encontrado para actualizar", contacto.ClaveCliente)
+	}
+	
+	// Actualizar índice si es necesario
+	if r.useOptimization && r.indiceClaveCliente != nil && !encontrado {
+		r.indiceClaveCliente[contacto.ClaveCliente] = &r.contactos[indice]
+	}
+	
+	return r.saveToExcel()
 }
 
 // Delete elimina un contacto
 func (r *ContactoRepository) Delete(claveCliente int) error {
+	if r.useOptimization {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+	}
+	
+	// Buscar el contacto
+	encontrado := false
+	var indice int
+	
 	for i, contacto := range r.contactos {
 		if contacto.ClaveCliente == claveCliente {
-			// Eliminar del slice
-			r.contactos = append(r.contactos[:i], r.contactos[i+1:]...)
-			return r.saveToExcel()
+			indice = i
+			encontrado = true
+			break
 		}
 	}
-	return fmt.Errorf("contacto con clave %d no encontrado para eliminar", claveCliente)
+	
+	if !encontrado {
+		return fmt.Errorf("contacto con clave %d no encontrado para eliminar", claveCliente)
+	}
+	
+	// Eliminar del slice (usando la técnica rápida de reemplazo)
+	r.contactos[indice] = r.contactos[len(r.contactos)-1]
+	r.contactos = r.contactos[:len(r.contactos)-1]
+	
+	// Actualizar índice si está activo
+	if r.useOptimization && r.indiceClaveCliente != nil {
+		delete(r.indiceClaveCliente, claveCliente)
+	}
+	
+	return r.saveToExcel()
 }
 
 // Search busca contactos basado en criterios
 func (r *ContactoRepository) Search(criteria *models.ContactoDTO) ([]models.Contacto, error) {
+	if r.useOptimization {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+	}
+	
+	// Optimización rápida para búsqueda por clave cliente
+	if criteria.ClaveCliente != "" {
+		clave, err := strconv.Atoi(criteria.ClaveCliente)
+		if err == nil {
+			if r.useOptimization && r.indiceClaveCliente != nil {
+				// Búsqueda por índice
+				if contacto, ok := r.indiceClaveCliente[clave]; ok {
+					return []models.Contacto{*contacto}, nil
+				}
+				return []models.Contacto{}, nil
+			} else {
+				// Búsqueda secuencial rápida para claves
+				for _, contacto := range r.contactos {
+					if contacto.ClaveCliente == clave {
+						return []models.Contacto{contacto}, nil
+					}
+				}
+				return []models.Contacto{}, nil
+			}
+		}
+	}
+	
+	// Para conjuntos pequeños, usar búsqueda simple y rápida
+	// Este algoritmo es eficiente para menos de ~1000 elementos
 	var resultados []models.Contacto
-
+	
 	for _, contacto := range r.contactos {
 		match := true
-
+		
 		// Filtrar por clave cliente
 		if criteria.ClaveCliente != "" {
 			clave, err := strconv.Atoi(criteria.ClaveCliente)
@@ -126,7 +304,7 @@ func (r *ContactoRepository) Search(criteria *models.ContactoDTO) ([]models.Cont
 				match = false
 			}
 		}
-
+		
 		// Filtrar por nombre (case insensitive, partial match)
 		if criteria.Nombre != "" && !strings.Contains(
 			strings.ToLower(contacto.Nombre), 
@@ -134,7 +312,7 @@ func (r *ContactoRepository) Search(criteria *models.ContactoDTO) ([]models.Cont
 		) {
 			match = false
 		}
-
+		
 		// Filtrar por correo (case insensitive, partial match)
 		if criteria.Correo != "" && !strings.Contains(
 			strings.ToLower(contacto.Correo), 
@@ -142,7 +320,7 @@ func (r *ContactoRepository) Search(criteria *models.ContactoDTO) ([]models.Cont
 		) {
 			match = false
 		}
-
+		
 		// Filtrar por teléfono (partial match)
 		if criteria.Telefono != "" && !strings.Contains(
 			contacto.TelefonoContacto, 
@@ -150,43 +328,73 @@ func (r *ContactoRepository) Search(criteria *models.ContactoDTO) ([]models.Cont
 		) {
 			match = false
 		}
-
+		
 		if match {
 			resultados = append(resultados, contacto)
 		}
 	}
-
+	
 	return resultados, nil
 }
 
 // ExistsByID verifica si existe un contacto con la clave dada
 func (r *ContactoRepository) ExistsByID(claveCliente int) (bool, error) {
-	_, err := r.GetByID(claveCliente)
-	if err != nil {
-		return false, nil
+	if r.useOptimization {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
 	}
-	return true, nil
+	
+	return r.existsByIDInternal(claveCliente)
 }
 
 // GetLoadErrors retorna los errores de carga del Excel
 func (r *ContactoRepository) GetLoadErrors() []models.RowError {
+	if r.useOptimization {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+	}
+	
 	return r.loadErrors
 }
 
-// 🆕 NUEVO: GetInvalidRowsData retorna los datos completos de filas inválidas
+// GetInvalidRowsData retorna los datos completos de filas inválidas
 func (r *ContactoRepository) GetInvalidRowsData() []models.RowData {
+	if r.useOptimization {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+	}
+	
 	return r.invalidRowsData
 }
 
-// 🆕 MEJORADO: ReloadExcel ahora retorna también los datos inválidos
+// ReloadExcel recarga el archivo Excel
 func (r *ContactoRepository) ReloadExcel() ([]models.RowError, []models.RowData, error) {
+	startTime := time.Now()
+	fmt.Println("🔄 Recargando Excel...")
+	
 	loadErrors, invalidData, err := r.loadFromExcel()
-	r.loadErrors = loadErrors
-	r.invalidRowsData = invalidData
+	
+	if r.useOptimization {
+		r.mu.Lock()
+		r.loadErrors = loadErrors
+		r.invalidRowsData = invalidData
+		
+		// Reconstruir índices si es necesario
+		if len(r.contactos) > 1000 {
+			r.buildIndices()
+		}
+		r.mu.Unlock()
+	} else {
+		r.loadErrors = loadErrors
+		r.invalidRowsData = invalidData
+	}
+	
+	fmt.Printf("✅ Excel recargado en %v\n", time.Since(startTime))
+	
 	return loadErrors, invalidData, err
 }
 
-// 🆕 MEJORADO: loadFromExcel ahora captura datos completos de filas inválidas
+// loadFromExcel carga datos desde Excel - versión simplificada y rápida
 func (r *ContactoRepository) loadFromExcel() ([]models.RowError, []models.RowData, error) {
 	file, err := xlsx.OpenFile(r.excelFile)
 	if err != nil {
@@ -198,11 +406,11 @@ func (r *ContactoRepository) loadFromExcel() ([]models.RowError, []models.RowDat
 	}
 
 	sheet := file.Sheets[0]
-	r.contactos = []models.Contacto{}
+	contactos := []models.Contacto{} // Lista temporal para construir
 	var loadErrors []models.RowError
 	var invalidRowsData []models.RowData
 
-	// Usar ForEachRow para xlsx/v3
+	// Usar ForEachRow para procesar filas
 	rowIndex := 0
 	err = sheet.ForEachRow(func(row *xlsx.Row) error {
 		if rowIndex == 0 { // Saltar encabezados
@@ -220,7 +428,7 @@ func (r *ContactoRepository) loadFromExcel() ([]models.RowError, []models.RowDat
 		})
 
 		if cellCount < 4 {
-			// Si la fila tiene contenido pero menos de 4 columnas
+			// Fila incompleta
 			hasContent := false
 			var partialData []string
 			row.ForEachCell(func(cell *xlsx.Cell) error {
@@ -233,13 +441,13 @@ func (r *ContactoRepository) loadFromExcel() ([]models.RowError, []models.RowDat
 			})
 			
 			if hasContent {
-				// 🆕 NUEVO: Crear RowData para fila incompleta
+				// Crear RowData para fila incompleta
 				rowData := models.RowData{
 					HasErrors:  true,
 					ErrorCount: 1,
 				}
 				
-				// Asignar los datos parciales que tenemos
+				// Asignar datos parciales
 				if len(partialData) > 0 { rowData.ClaveCliente = partialData[0] }
 				if len(partialData) > 1 { rowData.Nombre = partialData[1] }
 				if len(partialData) > 2 { rowData.Correo = partialData[2] }
@@ -276,7 +484,7 @@ func (r *ContactoRepository) loadFromExcel() ([]models.RowError, []models.RowDat
 		correo := strings.TrimSpace(cells[2].String())
 		telefono := strings.TrimSpace(cells[3].String())
 
-		// 🆕 NUEVO: Crear RowData con todos los datos de la fila
+		// Crear RowData
 		rowData := models.RowData{
 			ClaveCliente:     claveStr,
 			Nombre:           nombre,
@@ -286,7 +494,7 @@ func (r *ContactoRepository) loadFromExcel() ([]models.RowError, []models.RowDat
 			ErrorCount:       0,
 		}
 
-		// Validar que no estén vacíos
+		// Validar datos
 		rowErrors := []models.RowError{}
 		
 		if claveStr == "" {
@@ -363,7 +571,7 @@ func (r *ContactoRepository) loadFromExcel() ([]models.RowError, []models.RowDat
 				})
 			} else {
 				// Verificar duplicados de clave cliente
-				for _, existingContacto := range r.contactos {
+				for _, existingContacto := range contactos {
 					if existingContacto.ClaveCliente == clave {
 						rowData.AddError()
 						rowErrors = append(rowErrors, models.RowError{
@@ -427,7 +635,7 @@ func (r *ContactoRepository) loadFromExcel() ([]models.RowError, []models.RowDat
 		// Agregar errores a la lista principal
 		loadErrors = append(loadErrors, rowErrors...)
 
-		// 🆕 NUEVO: Si la fila tiene errores, agregarla a invalidRowsData
+		// Si la fila tiene errores, agregarla a invalidRowsData
 		if rowData.HasErrors {
 			invalidRowsData = append(invalidRowsData, rowData)
 		} else {
@@ -439,7 +647,7 @@ func (r *ContactoRepository) loadFromExcel() ([]models.RowError, []models.RowDat
 				Correo:           correo,
 				TelefonoContacto: telefono,
 			}
-			r.contactos = append(r.contactos, tempContacto)
+			contactos = append(contactos, tempContacto)
 		}
 
 		rowIndex++
@@ -449,19 +657,21 @@ func (r *ContactoRepository) loadFromExcel() ([]models.RowError, []models.RowDat
 	if err != nil {
 		return loadErrors, invalidRowsData, fmt.Errorf("error iterando filas: %w", err)
 	}
+	
+	// Actualizar lista de contactos
+	r.contactos = contactos
 
 	fmt.Printf("✅ Procesadas %d filas del Excel\n", rowIndex-1)
-	fmt.Printf("✅ Cargados %d contactos válidos\n", len(r.contactos))
-	fmt.Printf("⚠️  Encontradas %d filas con errores\n", len(invalidRowsData))
-	if len(loadErrors) > 0 {
-		fmt.Printf("⚠️  Se encontraron %d errores de validación\n", len(loadErrors))
-	}
-
+	fmt.Printf("✅ Cargados %d contactos válidos\n", len(contactos))
+	fmt.Printf("⚠️ Encontradas %d filas con errores\n", len(invalidRowsData))
+	
 	return loadErrors, invalidRowsData, nil
 }
 
-// saveToExcel guarda los contactos en el archivo Excel
+// saveToExcel guarda los contactos en el archivo Excel - versión simple
 func (r *ContactoRepository) saveToExcel() error {
+	startTime := time.Now()
+	
 	file := xlsx.NewFile()
 	sheet, err := file.AddSheet("Contactos")
 	if err != nil {
@@ -475,7 +685,7 @@ func (r *ContactoRepository) saveToExcel() error {
 	headerRow.AddCell().Value = "Correo"
 	headerRow.AddCell().Value = "TelefonoContacto"
 
-	// Agregar datos
+	// Agregar datos - versión simple y directa
 	for _, contacto := range r.contactos {
 		row := sheet.AddRow()
 		row.AddCell().Value = strconv.Itoa(contacto.ClaveCliente)
@@ -488,6 +698,6 @@ func (r *ContactoRepository) saveToExcel() error {
 		return fmt.Errorf("error guardando archivo Excel: %w", err)
 	}
 
-	fmt.Printf("✅ Guardados %d contactos en Excel\n", len(r.contactos))
+	fmt.Printf("✅ Guardados %d contactos en Excel en %v\n", len(r.contactos), time.Since(startTime))
 	return nil
 }

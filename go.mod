@@ -10,6 +10,8 @@ require (
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/peterbourgon/diskv/v3 v3.0.1 // indirect
+	github.com/plandem/ooxml v1.1.2 // indirect
+	github.com/plandem/xlsx v1.0.4 // indirect
 	github.com/rogpeppe/fastuuid v1.2.0 // indirect
 	github.com/rogpeppe/go-internal v1.9.0 // indirect
 	github.com/rs/cors v1.11.1 // indirect

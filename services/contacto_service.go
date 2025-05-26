@@ -20,7 +20,6 @@ type ContactoServiceInterface interface {
 	SearchContactos(criteria *models.ContactoDTO) ([]models.Contacto, []models.ErrorResponse, error)
 	GetExcelValidationReport() (*models.ExcelValidationReport, error)
 	ReloadExcel() (*models.ExcelValidationReport, error)
-	// 🆕 NUEVO: Obtener datos inválidos para corrección
 	GetInvalidContactsForCorrection() ([]models.RowData, error)
 }
 

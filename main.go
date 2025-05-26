@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"contactos-api/config"
 	"contactos-api/repositories"
@@ -16,9 +17,12 @@ import (
 
 func main() {
 	// Cargar configuración
+	startTime := time.Now()
+	fmt.Println("🚀 Iniciando API de Contactos...")
 	cfg := config.Load()
 
 	// Inicializar repositorio
+	fmt.Printf("📄 Cargando archivo Excel: %s\n", cfg.ExcelFile)
 	contactoRepo := repositories.NewContactoRepository(cfg.ExcelFile)
 
 	// Inicializar servicio
@@ -41,6 +45,7 @@ func main() {
 
 	handler := c.Handler(router)
 
+	fmt.Printf("✅ API inicializada en %v\n", time.Since(startTime))
 	fmt.Printf("🚀 Servidor iniciado en puerto %s\n", cfg.Port)
 	fmt.Printf("📊 Archivo Excel: %s\n", cfg.ExcelFile)
 	fmt.Printf("🌐 Frontend URL: http://localhost:3000\n")
