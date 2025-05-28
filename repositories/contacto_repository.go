@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
-
+    "regexp"
 	"contactos-api/models"
 
 	"github.com/tealeg/xlsx/v3"
@@ -631,6 +631,32 @@ func (r *ContactoRepository) loadFromExcel() ([]models.RowError, []models.RowDat
 				RowData: &rowData,
 			})
 		}
+
+		if correo != "" && !strings.Contains(correo, "@") {
+			rowData.AddError()
+			rowErrors = append(rowErrors, models.RowError{
+				Row:     currentRow,
+				Column:  "C",
+				Field:   "correo",
+				Value:   correo,
+				Error:   "El correo debe contener @",
+				RowData: &rowData,
+			})
+		}
+		
+		var comillasRegex = regexp.MustCompile(`[\"'“”‘’«»]`)
+
+if correo != "" && comillasRegex.MatchString(correo) {
+	rowData.AddError()
+	rowErrors = append(rowErrors, models.RowError{
+		Row:     currentRow,
+		Column:  "C",
+		Field:   "correo",
+		Value:   correo,
+		Error:   "El correo no puede contener ningún tipo de comillas",
+		RowData: &rowData,
+	})
+}
 
 		// Agregar errores a la lista principal
 		loadErrors = append(loadErrors, rowErrors...)
