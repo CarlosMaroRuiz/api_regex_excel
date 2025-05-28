@@ -1,80 +1,112 @@
-// utils/response.go
 package utils
 
 import (
 	"encoding/json"
 	"net/http"
-
 	"contactos-api/models"
 )
 
-// JSONResponse envía una respuesta JSON
-func JSONResponse(w http.ResponseWriter, statusCode int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(data)
+// APIResponse representa la estructura estándar de respuesta de la API
+type APIResponse struct {
+	Success bool        `json:"success"`
+	Data    interface{} `json:"data,omitempty"`
+	Message string      `json:"message,omitempty"`
+	Error   string      `json:"error,omitempty"`
 }
 
-// SuccessResponse envía una respuesta de éxito
+// ErrorDetail representa detalles de errores de validación
+type ErrorDetail struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
+	Value   string `json:"value,omitempty"`
+}
+
+// SuccessResponse envía una respuesta exitosa
 func SuccessResponse(w http.ResponseWriter, data interface{}) {
-	response := models.APIResponse{
+	response := APIResponse{
 		Success: true,
 		Data:    data,
 	}
-	JSONResponse(w, http.StatusOK, response)
+	
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }
 
-// CreatedResponse envía una respuesta de creación exitosa
+// CreatedResponse envía una respuesta de recurso creado
 func CreatedResponse(w http.ResponseWriter, data interface{}) {
-	response := models.APIResponse{
+	response := APIResponse{
 		Success: true,
 		Data:    data,
+		Message: "Recurso creado exitosamente",
 	}
-	JSONResponse(w, http.StatusCreated, response)
+	
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(response)
 }
 
-// ErrorResponse envía una respuesta de error
-func ErrorResponse(w http.ResponseWriter, statusCode int, message string) {
-	response := models.APIResponse{
+// BadRequestResponse envía una respuesta de solicitud inválida
+func BadRequestResponse(w http.ResponseWriter, message string) {
+	response := APIResponse{
 		Success: false,
 		Error:   message,
 	}
-	JSONResponse(w, statusCode, response)
+	
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	json.NewEncoder(w).Encode(response)
 }
 
-// ValidationErrorResponse envía una respuesta de errores de validación
-func ValidationErrorResponse(w http.ResponseWriter, errors []models.ErrorResponse) {
-	response := models.APIResponse{
-		Success: false,
-		Error:   "Errores de validación",
-		Errors:  errors,
-	}
-	JSONResponse(w, http.StatusBadRequest, response)
-}
-
-// BadRequestResponse envía una respuesta de solicitud incorrecta
-func BadRequestResponse(w http.ResponseWriter, message string) {
-	ErrorResponse(w, http.StatusBadRequest, message)
-}
-
-// NotFoundResponse envía una respuesta de no encontrado
+// NotFoundResponse envía una respuesta de recurso no encontrado
 func NotFoundResponse(w http.ResponseWriter, message string) {
-	ErrorResponse(w, http.StatusNotFound, message)
-}
-
-// ConflictResponse envía una respuesta de conflicto
-func ConflictResponse(w http.ResponseWriter, message string) {
-	ErrorResponse(w, http.StatusConflict, message)
+	response := APIResponse{
+		Success: false,
+		Error:   message,
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotFound)
+	json.NewEncoder(w).Encode(response)
 }
 
 // InternalServerErrorResponse envía una respuesta de error interno del servidor
 func InternalServerErrorResponse(w http.ResponseWriter, message string) {
-	ErrorResponse(w, http.StatusInternalServerError, message)
+	response := APIResponse{
+		Success: false,
+		Error:   message,
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusInternalServerError)
+	json.NewEncoder(w).Encode(response)
 }
 
-// ParseJSON parsea el JSON del cuerpo de la solicitud
+// ValidationErrorResponse envía una respuesta con errores de validación
+func ValidationErrorResponse(w http.ResponseWriter, errors []models.ErrorResponse) {
+	// Convertir errores del modelo a detalles de error
+	var errorDetails []ErrorDetail
+	for _, err := range errors {
+		errorDetails = append(errorDetails, ErrorDetail{
+			Field:   err.Campo,
+			Message: err.Mensaje,
+		})
+	}
+	
+	response := APIResponse{
+		Success: false,
+		Error:   "Errores de validación",
+		Data:    errorDetails,
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnprocessableEntity)
+	json.NewEncoder(w).Encode(response)
+}
+
+// ParseJSON parsea el JSON de la request
 func ParseJSON(r *http.Request, v interface{}) error {
 	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields() // No permitir campos desconocidos
+	defer r.Body.Close()
 	return decoder.Decode(v)
 }
